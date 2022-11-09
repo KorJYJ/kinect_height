@@ -49,8 +49,8 @@ def get_color(idx):
     return color
 
 
-def plot_tracking(image, tlwhs, obj_ids, scores=None, frame_id=0, fps=0., ids2=None):
-    im = np.ascontiguousarray(np.copy(image))
+def plot_tracking(image, tlwhs, obj_ids, online_heights, scores=None, frame_id=0, fps=0., ids2=None):
+    im = np.ascontiguousarray(np.copy(image))   
     im_h, im_w = im.shape[:2]
 
     top_view = np.zeros([im_w, im_w, 3], dtype=np.uint8) + 255
@@ -75,9 +75,15 @@ def plot_tracking(image, tlwhs, obj_ids, scores=None, frame_id=0, fps=0., ids2=N
             id_text = id_text + ', {}'.format(int(ids2[i]))
         color = get_color(abs(obj_id))
         cv2.rectangle(im, intbox[0:2], intbox[2:4], color=color, thickness=line_thickness)
+        
+        cv2.line(im, (int(x1 + w//2), intbox[1]),(int(x1+w//2),intbox[3]),(0, 0, 255))
+        
         cv2.putText(im, id_text, (intbox[0], intbox[1]), cv2.FONT_HERSHEY_PLAIN, text_scale, (0, 0, 255),
                     thickness=text_thickness)
+        cv2.putText(im, online_heights[i], (intbox[0]+50, intbox[1]), cv2.FONT_HERSHEY_PLAIN, text_scale, (0, 0, 255),
+                    thickness=text_thickness)
     return im
+
 
 
 _COLORS = np.array(

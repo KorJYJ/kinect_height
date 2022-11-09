@@ -37,7 +37,7 @@ device_config = pykinect.default_configuration
 # kinect = pykinect.start_device(config=device_config)
 # calibration = kinect.get_calibration(device_config.depth_mode, device_config.color_resolution)
 
-kinect = pykinect.start_playback('/home/kist/Desktop/221102_기관고유_Depth/calib_sub1.mkv')
+kinect = pykinect.start_playback('/home/kist/Desktop/221102_기관고유_Depth/set1_sub2.mkv')
 calibration = kinect.get_calibration()
 kinect.set_color_conversion(pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32)
 print(device_config)
@@ -265,19 +265,17 @@ def measure_height_1(depth_image, tlwh):
     
     head_pixel = _k4a.k4a_float2_t()
     feet_pixel = _k4a.k4a_float2_t()
-    mid_pixel = _k4a.k4a_float2_t()
     
-    head_pixel.xy.x = x1 + w//2
-    head_pixel.xy.y = y1+20
+    head_pixel.xy.x = x1 + w/2
+    head_pixel.xy.y = y1 + 20
 
-    feet_pixel.xy.x = x1 + w//2
-    feet_pixel.xy.y = y1 + h
-
+    feet_pixel.xy.x = x1 + w/2
+    feet_pixel.xy.y = y1 + h - 10
 
     Head_Depth = depth_image[int(y1)+20, int(x1+w//2)]
     if y1+h > depth_image.shape[0]:
         return 0
-    Feet_Depth = depth_image[int(y1+h), int(x1 + w//2)]
+    Feet_Depth = depth_image[int(y1+h-10), int(x1 + w//2)]
     
     
     head = calibration.convert_2d_to_3d( head_pixel,  Head_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
@@ -298,10 +296,10 @@ def measure_height_2(depth_image, tlwh):
     feet_pixel = _k4a.k4a_float2_t()
     mid_pixel = _k4a.k4a_float2_t()
     
-    head_pixel.xy.x = x1 + w//2
+    head_pixel.xy.x = x1 + w/2
     head_pixel.xy.y = y1
 
-    feet_pixel.xy.x = x1 + w//2
+    feet_pixel.xy.x = x1 + w/2
     feet_pixel.xy.y = y1 + h
     if y1+h > depth_image.shape[0]:
         return 0
@@ -321,41 +319,62 @@ def measure_height_2(depth_image, tlwh):
     
     return height    
 
-def measure_height_3(color_image, depth_image, tlwh):
-    cropped_human = human_segment(color_image, depth_image, tlwh)
-    median = np.median(cropped_human.flatten())
+def measure_height_3(depth_image, tlwh):
+    x1 , y1, w, h = tlwh
+    bbox_human_depth = copy.deepcopy(depth_image[int(y1):int(y1+h), int(x1):int(x1+w)])
+
+    threshold1 = np.quantile(bbox_human_depth.flatten(), 0.15)
+    threshold2 = np.quantile(bbox_human_depth.flatten(), 0.80)
     
-    result = np.ones_like(cropped_human)
-    result = result*median
+    filter = bbox_human_depth<threshold2
+    filter2 = threshold1 < bbox_human_depth
+    
+    bbox_human_result_depth = filter*filter2*bbox_human_depth
+    
+    mean_y = np.mean(bbox_human_result_depth, axis=1)
+    # human height not zero
+    for yi in range(len(bbox_human_result_depth)):
+        if mean_y[yi] >0:
+            break
+        
+    for xi in range(len(bbox_human_result_depth[yi])):
+        if 0 < bbox_human_result_depth[yi, xi] < 3000:
+            break
     
     
     head_pixel = _k4a.k4a_float2_t()
     feet_pixel = _k4a.k4a_float2_t()
-    mid_pixel = _k4a.k4a_float2_t()
     
-    head_pixel.xy.x = 1
-    head_pixel.xy.y = 1
-
-    feet_pixel.xy.x = 1
-    feet_pixel.xy.y = cropped_human.shape[0]
-
-
-    Head_Depth = depth_image[1, 1]
     
-    Feet_Depth = depth_image[1, cropped_human.shape[0]]
+    head_pixel.xy.x = xi
+    head_pixel.xy.y = yi
+
+    feet_pixel.xy.x = x1 + w/2
+    feet_pixel.xy.y = y1 + h
+
+
+    Head_Depth = bbox_human_result_depth[yi, xi]
+    Feet_Depth = bbox_human_result_depth[int(x1 + w/2), int(y1+h)]
     
     
     head = calibration.convert_2d_to_3d( head_pixel,  Head_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
     feet = calibration.convert_2d_to_3d( feet_pixel,  Feet_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
     
-    logger.info(f"head : [{head.xyz.x}, {head.xyz.y}, {head.xyz.z}], feat : [{feet.xyz.x}, {feet.xyz.y}, {feet.xyz.z}]")                         
 
     height = math.sqrt(pow(head.v[0] - feet.v[0],2) + pow(head.v[1] - feet.v[1],2) + pow(head.v[2] - feet.v[2],2))
-     
 
     
-    
     return height
+
+def make_height_class():
+    interval = np.arange(100, 201, 5)
+    
+    height_class = []
+    
+    for i in range(len(interval) - 1):
+        height_class.append((interval[i],  interval[i+1]))
+        
+    return height_class
 
 
 def human_segment(color_image, depth_image, tlwh):
@@ -406,12 +425,14 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
         save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (int(width), int(height))
     )
     
-
     
     tracker = BYTETracker(args, frame_rate=15)
     timer = Timer()
     frame_id = 0
     results = []
+
+    # height class interval 5
+    height_class = make_height_class()
 
     while True:
         if frame_id % 20 == 0:
@@ -431,8 +452,6 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
             outputs, img_info = predictor.inference(color_image, timer)
             if outputs[0] is not None:
                 online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
-                
-
                 online_tlwhs = []
                 online_ids = []
                 online_scores = []
@@ -442,12 +461,9 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
                     tlwh = t.tlwh
                     tid = t.track_id
 
-                    # human_segment(depth_image, color_image, tlwh)
-                    # height = measure_height_2(color_image, depth_image, tlwh)
-                    # height = measure_height_1(result, [0, 0, tlwh[2], tlwh[3]])
-                    height = measure_height_1(depth_image, tlwh)
-  
-
+                    # meausre human height
+                    measure_height_3(depth_image, tlwh)
+                    height = measure_height_2(depth_image, tlwh)
                     online_height.append(str(round(height/10, 2)))
                     
                     vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh

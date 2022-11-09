@@ -10,14 +10,18 @@ from yolox.data.data_augment import preproc
 from yolox.exp import get_exp
 from yolox.utils import fuse_model, get_model_info, postprocess
 from yolox.utils.visualize import plot_tracking
-from yolox.tracker.byte_tracker import BYTETracker
+from yolox.tracker.byte_tracker import *
 from yolox.tracking_utils.timer import Timer
 import sys
 import cv2
 import math
 import numpy as np
+
 import pyKinectAzure.pykinect_azure as pykinect
 from pyKinectAzure.pykinect_azure.k4a import _k4a
+
+
+import copy
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
 pykinect.initialize_libraries()
@@ -26,10 +30,17 @@ device_config = pykinect.default_configuration
 
 ## 카메라 화소 및 depth 마다 Camera Matrix가 다르므로 여건에 맞춰서 설정
 # Modify camera configuration
-device_config = pykinect.default_configuration
+
 device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
 device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
-device_config.depth_mode = pykinect.K4A_DEPTH_MODE_WFOV_2X2BINNED
+device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
+device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_15
+kinect = pykinect.start_device(config=device_config)
+kinect_calibration = kinect.get_calibration(device_config.depth_mode, device_config.color_resolution)
+
+# kinect = pykinect.start_playback('/home/kist/Desktop/221102_기관고유_Depth/set1_sub2.mkv')
+# kinect_calibration = kinect.get_calibration()
+# kinect.set_color_conversion(pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32)
 # print(device_config)
 
 def make_parser():
@@ -245,123 +256,255 @@ def image_demo(predictor, vis_folder, current_time, args):
         with open(res_file, 'w') as f:  
             f.writelines(results)
         logger.info(f"save results to {res_file}")
+import matplotlib.pyplot as plt
+import pandas as pd
 
-kinect = pykinect.start_device(config=device_config)
-calibration = kinect.get_calibration(device_config.depth_mode, device_config.color_resolution)
+
+
+# def measure_height_1(depth_image, tlwh):
+#     x1, y1, w, h = tlwh
+    
+#     head_pixel = _k4a.k4a_float2_t()
+#     feet_pixel = _k4a.k4a_float2_t()
+    
+#     head_pixel.xy.x = x1 + w/2
+#     head_pixel.xy.y = y1 + 20
+
+#     feet_pixel.xy.x = x1 + w/2
+#     feet_pixel.xy.y = y1 + h - 10
+
+#     Head_Depth = depth_image[int(y1)+20, int(x1+w//2)]
+#     if y1+h > depth_image.shape[0]:
+#         return 0
+#     Feet_Depth = depth_image[int(y1+h-10), int(x1 + w//2)]
+    
+    
+#     head = kinect_calibration.convert_2d_to_3d( head_pixel,  Head_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+#     feet = kinect_calibration.convert_2d_to_3d( feet_pixel,  Feet_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+    
+#     logger.info(f"head : [{head.xyz.x}, {head.xyz.y}, {head.xyz.z}], feat : [{feet.xyz.x}, {feet.xyz.y}, {feet.xyz.z}]")                         
+
+#     height = math.sqrt(pow(head.v[0] - feet.v[0],2) + pow(head.v[1] - feet.v[1],2) + pow(head.v[2] - feet.v[2],2))
+    
+    
+#     return height
+    
+# def measure_height_2(depth_image, tlwh):
+#     mean_depth = 0
+#     x1, y1, w, h = tlwh
+
+#     head_pixel = _k4a.k4a_float2_t()
+#     feet_pixel = _k4a.k4a_float2_t()
+#     mid_pixel = _k4a.k4a_float2_t()
+    
+#     head_pixel.xy.x = x1 + w/2
+#     head_pixel.xy.y = y1
+
+#     feet_pixel.xy.x = x1 + w/2
+#     feet_pixel.xy.y = y1 + h
+#     if y1+h > depth_image.shape[0]:
+#         return 0
+
+#     for i in range(-3, 3):
+#         for j in range(-3, 3):
+#             if 0 < int(x1 + w//2) +i < depth_image.shape[0] and 0 < int(y1+ h//2) + j < depth_image.shape[1]:
+#                 mean_depth = mean_depth + depth_image[int(y1+ h//2) +i , int(x1 + w//2) + j].astype('float') / 36
+        
+
+    
+    
+#     head = calibration.convert_2d_to_3d( head_pixel,  mean_depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+#     feet = calibration.convert_2d_to_3d( feet_pixel,  mean_depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+    
+#     height = abs(head.v[1] - feet.v[1])    
+    
+#     return height
+
+# def measure_height_3(depth_image, tlwh):
+#     x1 , y1, w, h = tlwh
+#     bbox_human_depth = copy.deepcopy(depth_image[int(y1):int(y1+h), int(x1):int(x1+w)])
+
+#     threshold1 = np.quantile(bbox_human_depth.flatten(), 0.15)
+#     threshold2 = np.quantile(bbox_human_depth.flatten(), 0.80)
+    
+#     filter = bbox_human_depth<threshold2
+#     filter2 = threshold1 < bbox_human_depth
+    
+#     bbox_human_result_depth = filter*filter2*bbox_human_depth
+    
+#     mean_y = np.mean(bbox_human_result_depth, axis=1)
+#     # human height not zero
+#     for yi in range(len(bbox_human_result_depth)):
+#         if mean_y[yi] >0:
+#             break
+        
+#     for xi in range(len(bbox_human_result_depth[yi])):
+#         if 0 < bbox_human_result_depth[yi, xi] < 3000:
+#             break
+    
+    
+#     head_pixel = _k4a.k4a_float2_t()
+#     feet_pixel = _k4a.k4a_float2_t()
+    
+    
+#     head_pixel.xy.x = xi
+#     head_pixel.xy.y = yi
+
+#     feet_pixel.xy.x = x1 + w/2
+#     feet_pixel.xy.y = y1 + h
+
+
+#     Head_Depth = bbox_human_result_depth[yi, xi]
+#     Feet_Depth = bbox_human_result_depth[int(x1 + w/2), int(y1+h)]
+    
+    
+#     head = calibration.convert_2d_to_3d( head_pixel,  Head_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+#     feet = calibration.convert_2d_to_3d( feet_pixel,  Feet_Depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+    
+
+#     height = math.sqrt(pow(head.v[0] - feet.v[0],2) + pow(head.v[1] - feet.v[1],2) + pow(head.v[2] - feet.v[2],2))
+
+    
+#     return height
+
+def make_height_class():
+    interval = np.arange(100, 201, 5)
+    
+    height_class = []
+    
+    for i in range(len(interval) - 1):
+        height_class.append((interval[i],  interval[i+1]))
+        
+    return height_class
+
+
+def human_segment(color_image, depth_image, tlwh):
+    x1, y1, w, h = tlwh
+    
+    bbox_human_depth = copy.deepcopy(depth_image[int(y1):int(y1+h), int(x1):int(x1+w)])
+    bbox_human_rgb = copy.deepcopy(color_image[int(y1):int(y1+h), int(x1):int(x1+w)])
+    plt.hist(bbox_human_depth.flatten(), bins = 100)
+    a = pd.DataFrame(bbox_human_depth.flatten())
+    print(a.describe())
+    plt.pause(0.01)
+    plt.clf()
+
+    threshold1 = np.quantile(bbox_human_depth.flatten(), 0.15)
+    threshold2 = np.quantile(bbox_human_depth.flatten(), 0.80)
+    
+    filter = bbox_human_depth<threshold2
+    filter2 = threshold1 < bbox_human_depth
+    
+    bbox_human_result  = filter.reshape(filter.shape[0], filter.shape[1], 1)*filter2.reshape(filter2.shape[0], filter2.shape[1], 1)*bbox_human_rgb
+    bbox_human_result_depth = filter*filter2*bbox_human_depth
+    cv2.imshow('a', bbox_human_result)
+    
+    print(bbox_human_result_depth.mean(axis=1))
+    
+    return bbox_human_result
+
+    
 def imageflow_demo(predictor, vis_folder, current_time, args):
     #cap = cv2.VideoCapture(url)
-    
-    
-    # width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)  # float
-    # height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)  # float  
-    # fps = cap.get(cv2.CAP_PROP_FPS)
-    # timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
-    
-    # # save
-    # save_folder = osp.join(vis_folder, timestamp)
-    # os.makedirs(save_folder, exist_ok=True)
-    # if args.demo == "video":
-    #     save_path = osp.join(save_folder, args.path.split("/")[-1])
-    # else:
-    #     save_path = osp.join(save_folder, "camera.mp4")
-    # logger.info(f"video save_path is {save_path}")
-    # vid_writer = cv2.VideoWriter(
-    #     save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (int(width), int(height))
-    # )
-    
+    cap = kinect.update()
 
     
-    tracker = BYTETracker(args, frame_rate=30)
+    width = 512
+    height = 512
+    fps = 30
+    timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
+    
+    # save
+    save_folder = osp.join(vis_folder, timestamp)
+    os.makedirs(save_folder, exist_ok=True)
+    if args.demo == "video":
+        save_path = osp.join(save_folder, args.path.split("/")[-1])
+    else:
+        save_path = osp.join(save_folder, "camera.mp4")
+    logger.info(f"video save_path is {save_path}")
+    vid_writer = cv2.VideoWriter(
+        save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (int(width), int(height))
+    )
+    
+    
+    tracker = BYTETracker(args, frame_rate=15)
     timer = Timer()
     frame_id = 0
     results = []
+
+    # height class interval 5
+    height_class = make_height_class()
+
     while True:
         if frame_id % 20 == 0:
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
+        # cap = kinect.update()
         cap = kinect.update()
-        ret, color_image = cap.get_transformed_color_image()
+        _, color_image = cap.get_transformed_color_image()
         color_image = color_image[:, :, 0:3]
-        ret_depth, depth_image = cap.get_depth_image()   
+        _, depth_image = cap.get_depth_image()   
+        
+        # if ret and ret_depth:
+        if True:
+            outputs, img_info = predictor.inference(color_image, timer)
+            if outputs[0] is not None:
+                online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size, depth_image)
+                online_tlwhs = []
+                online_ids = []
+                online_scores = []
+                online_height = []
+                
+                for t in online_targets:
+                    tlwh = t.tlwh
+                    tid = t.track_id
 
-        if frame_id % 2 == 0:
-            if ret and ret_depth:
-                outputs, img_info = predictor.inference(color_image, timer)
-                if outputs[0] is not None:
-                    online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
+                    # meausre human height
+                    # measure_height_3(depth_image, tlwh)
+                    # height = measure_height_2(depth_image, tlwh)
+                    # online_height.append(str(round(height/10, 2)))
                     
+                    logger.info(str(height))
+                    height = str(round(t.get_height()/10, 2))
+                    online_height.append(height)
+                    vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
+                    if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
+                        online_tlwhs.append(tlwh)
+                        online_ids.append(tid)
+                        
+                        online_scores.append(t.score)
+                        logger.info(f"{tid}'s height : {height}")
 
-                    online_tlwhs = []
-                    online_ids = []
-                    online_scores = []
-                    online_height = []
-                    for t in online_targets:
-                        tlwh = t.tlwh
-                        tid = t.track_id
+                        results.append(
+                            f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
+                        )
                         
-                        x1, y1, w, h = tlwh
-                        
-                        tlwh = [x1, y1, w, h]
-                        
-                        
-                        
-                        
-                        if 0<int(x1+w/2)< depth_image.shape[0] and 0 <= y1 <= depth_image.shape[1] and 0 <= y1+h <= depth_image.shape[1] :
-                            head_pixel = _k4a.k4a_float2_t()
-                            feet_pixel = _k4a.k4a_float2_t()
-                            
-                            
-                            head_pixel.xy.x = x1 + w//2
-                            head_pixel.xy.y = y1
-
-                            feet_pixel.xy.x = x1 + w//2
-                            feet_pixel.xy.y = y1+h
-                            
-                            Head_Depth = depth_image[int(x1+w/2), int(y1)].astype('float')
-                            Feet_Depth = depth_image[int(x1+ w/2), int(y1+h)].astype('float')
-                            
-                            head = calibration.convert_2d_to_3d( head_pixel,  Head_Depth, 0, 0)
-                            feet = calibration.convert_2d_to_3d( feet_pixel,  Feet_Depth, 0, 0)
-                            height = round(math.sqrt(pow(head.v[0] - feet.v[0],2) + pow(head.v[1] - feet.v[1],2) + pow(head.v[2] - feet.v[2],2))/10,1)
-                            logger.info(str(height))
-                            online_height.append(str(height))
-                        else :
-                            online_height.append(' ')
-                            
-                        vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
-                        if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
-                            online_tlwhs.append(tlwh)
-                            online_ids.append(tid)
-                            online_scores.append(t.score)
-                            results.append(
-                                f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
-                            )
-                    timer.toc()
-                    online_im = plot_tracking(
-                        img_info['raw_img'], online_tlwhs, online_ids, online_height, frame_id=frame_id + 1, fps=1. / timer.average_time
-                    )
-                    
-                    online_depth = plot_tracking(
-                        depth_image.astype(np.uint8), online_tlwhs, online_ids, online_height, frame_id=frame_id + 1, fps=1. / timer.average_time
-                    )
-                else:
-                    timer.toc()
-                    online_im = img_info['raw_img']
-                # if args.save_result:
-                #     vid_writer.write(online_im)
-                cv2.imshow('Tracking', online_im)
-                cv2.imshow('depth', online_depth)
-                ch = cv2.waitKey(1)
-                if ch == 27 or ch == ord("q") or ch == ord("Q"):
-                    break
+                timer.toc()
+                online_im = plot_tracking(
+                    img_info['raw_img'], online_tlwhs, online_ids, online_height, frame_id=frame_id + 1, fps=1. / timer.average_time
+                )
+                
+                online_depth = plot_tracking(
+                    depth_image.astype(np.uint8), online_tlwhs, online_ids, online_height, frame_id=frame_id + 1, fps=1. / timer.average_time
+                )
             else:
+                timer.toc()
+                online_im = img_info['raw_img']
+            if args.save_result:
+                vid_writer.write(online_im)
+            cv2.imshow('Tracking', online_im)
+            cv2.imshow('depth', online_depth)
+            ch = cv2.waitKey(1)
+            if ch == 27 or ch == ord("q") or ch == ord("Q"):
                 break
-        frame_id += 1
+        else:
+            break
+    frame_id += 1
 
-    # if args.save_result:
-    #     res_file = osp.join(vis_folder, f"{timestamp}.txt")
-    #     with open(res_file, 'w') as f:
-    #         f.writelines(results)
-    #     logger.info(f"save results to {res_file}")
+    if args.save_result:
+        res_file = osp.join(vis_folder, f"{timestamp}.txt")
+        with open(res_file, 'w') as f:
+            f.writelines(results)
+        logger.info(f"save results to {res_file}")
 
 
 def main(exp, args):
