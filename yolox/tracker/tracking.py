@@ -1,4 +1,3 @@
-import math
 import numpy as np
 from collections import deque
 import os
@@ -12,7 +11,10 @@ from .kalman_filter import KalmanFilter
 from yolox.tracker import matching
 from .basetrack import BaseTrack, TrackState
 
+import tools.pyKinectAzure.pykinect_azure as pykinect
+from tools.pyKinectAzure.pykinect_azure.k4a import _k4a
 
+from tools.cam_tracker_A import kinect_calibration
 
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
@@ -26,27 +28,53 @@ class STrack(BaseTrack):
 
         self.score = score
         self.tracklet_len = 0
-        self.height = np.array([1700])
+        self.height = np.array([])
         
     def get_height(self):
-        logger.info(f"height : {np.mean(self.height)}")
-        return self.height[-1]    
+        return np.mean(self.height)
+    
     
     def update_height(self, height):
-        if 1000 < height < 2000:
-            self.height = np.append(self.height, height)
+        np.append(self.height, height)
+        if len(self.height) > 5:
+            # 표준편차를 이요하여 이상치 제거 
+            mean_height = self.get_height()
+            sigma_height = np.srd(self.height)
             
-            # if len(self.height) > 30:
-            # # 표준편차를 이요하여 이상치 제거 
-            # mean_height = self.get_height()
-            # sigma_height = np.std(self.height)
-            
-            # for i in range(len(self.height)):
-            #     Z = (self.height[i]-mean_height)/ sigma_height
-            #     if Z > 1.5 or Z < -1.5:
-            #         np.delete(self.height, i)
-            #         break     
+            for i in range(len(self.height)):
+                Z = (self.height[i]-mean_height)/ sigma_height
+                if Z > 1 or Z < -1:
+                    np.delete(self.height, i)
+                    
+        if self.height >5:
+            np.delete(self.height, -1)
+        
+    def measure_height(self, depth_image):
+        mean_depth = 0
+        x1, y1, w, h = self._tlwh
 
+        head_pixel = _k4a.k4a_float2_t()
+        feet_pixel = _k4a.k4a_float2_t()
+        
+        head_pixel.xy.x = x1 + w/2
+        head_pixel.xy.y = y1
+
+        feet_pixel.xy.x = x1 + w/2
+        feet_pixel.xy.y = y1 + h
+        if y1+h > depth_image.shape[0]:
+            return 0
+
+        for i in range(-3, 3):
+            for j in range(-3, 3):
+                if 0 < int(x1 + w//2) +i < depth_image.shape[0] and 0 < int(y1+ h//2) + j < depth_image.shape[1]:
+                    mean_depth = mean_depth + depth_image[int(y1+ h//2) +i , int(x1 + w//2) + j].astype('float') / 36
+        
+        head = kinect_calibration.convert_2d_to_3d( head_pixel,  mean_depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+        feet = kinect_calibration.convert_2d_to_3d( feet_pixel,  mean_depth, pykinect.K4A_CALIBRATION_TYPE_DEPTH, pykinect.K4A_CALIBRATION_TYPE_DEPTH)
+        
+        height = abs(head.v[1] - feet.v[1])    
+        logger.info(str(height))
+        return height
 
     def predict(self):
         mean_state = self.mean.copy()
@@ -67,7 +95,7 @@ class STrack(BaseTrack):
                 stracks[i].mean = mean
                 stracks[i].covariance = cov
 
-    def activate(self, kalman_filter, frame_id):
+    def activate(self, kalman_filter, frame_id, depth_image):
         """Start a new tracklet"""
         self.kalman_filter = kalman_filter
         self.track_id = self.next_id()
@@ -81,8 +109,9 @@ class STrack(BaseTrack):
         self.frame_id = frame_id
         self.start_frame = frame_id
         
+        self.update_height(self.measure_height(depth_image))
 
-    def re_activate(self, new_track, frame_id, new_id=False):
+    def re_activate(self, depth_image, new_track, frame_id, new_id=False):
         self.mean, self.covariance = self.kalman_filter.update(
             self.mean, self.covariance, self.tlwh_to_xyah(new_track.tlwh)
         )
@@ -94,8 +123,9 @@ class STrack(BaseTrack):
             self.track_id = self.next_id()
         self.score = new_track.score
         
+        self.update_height(self.measure_height(depth_image))
 
-    def update(self, new_track, frame_id):
+    def update(self, new_track, frame_id, depth_image):
         """
         Update a matched track
         :type new_track: STrack
@@ -113,6 +143,8 @@ class STrack(BaseTrack):
         self.is_activated = True
 
         self.score = new_track.score
+
+        self.update_height(self.measure_height(depth_image))
         
     @property
     # @jit(nopython=True)
@@ -155,7 +187,7 @@ class STrack(BaseTrack):
     # @jit(nopython=True)
     def tlbr_to_tlwh(tlbr):
         ret = np.asarray(tlbr).copy()
-        ret[2:] -= ret[:2] 
+        ret[2:] -= ret[:2]
         return ret
 
     @staticmethod
@@ -170,7 +202,7 @@ class STrack(BaseTrack):
 
 
 class BYTETracker(object):
-    def __init__(self, args, frame_rate=30 ):
+    def __init__(self, args, frame_rate=30):
         self.tracked_stracks = []  # type: list[STrack]
         self.lost_stracks = []  # type: list[STrack]
         self.removed_stracks = []  # type: list[STrack]
@@ -182,8 +214,9 @@ class BYTETracker(object):
         self.buffer_size = int(frame_rate / 30.0 * args.track_buffer)
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
-        
-    def update(self, output_results, img_info, img_size):
+
+    def update(self, output_results, img_info, img_size, depth_image):
+        logger.info("didididii")
         self.frame_id += 1
         activated_starcks = []
         refind_stracks = []
@@ -253,11 +286,11 @@ class BYTETracker(object):
             det = detections[idet]
             # Tracking되고 있는 이전 ID로 업데이터 해준다.
             if track.state == TrackState.Tracked:
-                track.update(detections[idet], self.frame_id)
+                track.update(detections[idet], self.frame_id, depth_image)
                 activated_starcks.append(track)
             # Tracking이 되고 있지 않은 상태라면 새로운 ID를 부여하지 않고 Activate 시켜준다.
             else:
-                track.re_activate(det, self.frame_id, new_id=False)
+                track.re_activate(depth_image, det, self.frame_id, new_id=False)
                 refind_stracks.append(track)
 
         ''' Step 3: Second association, with low score detection boxes'''
@@ -277,7 +310,7 @@ class BYTETracker(object):
             track = r_tracked_stracks[itracked]
             det = detections_second[idet]
             if track.state == TrackState.Tracked:
-                track.update(det, self.frame_id)
+                track.update(det, self.frame_id, depth_image)
                 activated_starcks.append(track)
             else:
                 track.re_activate(det, self.frame_id, new_id=False)
@@ -300,7 +333,7 @@ class BYTETracker(object):
         
         # 비교한것이 맞으면 tracker를 ctivate 시킨다.
         for itracked, idet in matches:
-            unconfirmed[itracked].update(detections[idet], self.frame_id)
+            unconfirmed[itracked].update(detections[idet], self.frame_id, depth_image)
             activated_starcks.append(unconfirmed[itracked])
         # 맞는게 없으면 track를 삭제한다.
         for it in u_unconfirmed:
@@ -313,7 +346,7 @@ class BYTETracker(object):
             track = detections[inew]
             if track.score < self.det_thresh:
                 continue
-            track.activate(self.kalman_filter, self.frame_id)
+            track.activate(self.kalman_filter, self.frame_id, depth_image)
             activated_starcks.append(track)
             
         """ Step 5: Update state"""
